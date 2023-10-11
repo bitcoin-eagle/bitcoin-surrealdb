@@ -26,6 +26,7 @@ const TXOUT_TABLE: &str = "tx_out";
 const ADDRESS_TABLE: &str = "address";
 const OUTPUTS_EDGE: &str = "outputs";
 const SPENT_BY_EDGE: &str = "spent_by";
+const REWARDS_EDGE: &str = "rewards";
 
 #[derive(Debug, Deserialize)]
 struct Record {
@@ -120,15 +121,22 @@ fn block_to_surql(buf: &mut String, height: u64, block: Block, network: Network)
     buf.push_str(" CONTENT {");
     push_link_str_disp(buf, "prev_id", BLOCK_TABLE, block.header.prev_blockhash);
     push_pair_raw_disp(buf, "height", height);
-    if let Some(coinbase) = block.txdata.first() {
-        push_link_str_disp(buf, "rewards_id", TRANSACTION_TABLE, coinbase.txid());
-    }
     push_pair_raw(
         buf,
         "time",
         format!("time::from::unix({})", block.header.time),
     );
     buf.push_str("} RETURN NONE;\n");
+
+    if let Some(coinbase) = block.txdata.first() {
+        buf.push_str("RELATE ");
+        buf.push_str(&block_id);
+        buf.push_str("->");
+        buf.push_str(REWARDS_EDGE);
+        buf.push_str("->");
+        push_id_str_disp(buf, TRANSACTION_TABLE, coinbase.txid());
+        buf.push_str(" RETURN NONE;\n");
+    }
 
     buf.push_str("UPDATE ");
     buf.push_str(&format!("{}:{}", TIP_HIST_TABLE, height));
