@@ -12,3 +12,4 @@ surrealdb = { version = "1.0.0" }
 bitcoincore-rpc = "0.17.0"
 bitcoin = "0.30.1"
 anyhow = "1.0.75"
+strum = { version = "0.25.0", features = ["derive"] }

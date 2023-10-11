@@ -1,15 +1,13 @@
 use std::fmt::Display;
 
 use anyhow::Result;
-use bitcoin::{Address, Block, Network};
-use bitcoincore_rpc::{Auth, Client, RpcApi};
-use serde::{Deserialize, Serialize};
-use surrealdb::{
-    engine::remote::ws::Ws,
-    opt::{auth::Root, Resource},
-    sql::{Id, Table, Thing},
-    Surreal,
+use bitcoin::{
+    address::{Payload, WitnessVersion},
+    Address, AddressType, Block, Network, Script,
 };
+use bitcoincore_rpc::{Auth, Client, RpcApi};
+use serde::Deserialize;
+use surrealdb::{engine::remote::ws::Ws, opt::auth::Root, sql::Thing, Surreal};
 mod surreal_example;
 
 // #[derive(Debug, Serialize, Deserialize)]
@@ -27,6 +25,7 @@ const ADDRESS_TABLE: &str = "address";
 const OUTPUTS_EDGE: &str = "outputs";
 const SPENT_BY_EDGE: &str = "spent_by";
 const REWARDS_EDGE: &str = "rewards";
+const CONFIRMS_EDGE: &str = "confirms";
 
 #[derive(Debug, Deserialize)]
 struct Record {
@@ -151,9 +150,17 @@ fn block_to_surql(buf: &mut String, height: u64, block: Block, network: Network)
         buf.push_str("UPDATE ");
         buf.push_str(&transaction_id);
         buf.push_str(" CONTENT {");
-        push_pair_raw(buf, "block_id", &block_id);
-        push_pair_raw_disp(buf, "block_tx_index", idx);
         push_pair_raw_disp(buf, "rbf", transaction.is_explicitly_rbf());
+        buf.push_str("} RETURN NONE;\n");
+
+        buf.push_str("RELATE ");
+        buf.push_str(&block_id);
+        buf.push_str("->");
+        buf.push_str(CONFIRMS_EDGE);
+        buf.push_str("->");
+        buf.push_str(&transaction_id);
+        buf.push_str(" CONTENT {");
+        push_pair_raw_disp(buf, "index", idx);
         buf.push_str("} RETURN NONE;\n");
 
         for (output, vout) in transaction.output.into_iter().zip(0_u32..) {
@@ -163,21 +170,45 @@ fn block_to_surql(buf: &mut String, height: u64, block: Block, network: Network)
             buf.push_str(&txout_id);
             buf.push_str(" CONTENT {");
             push_pair_raw_disp(buf, "value_sats", output.value);
-            let address = Address::from_script(output.script_pubkey.as_script(), network);
-            if let Ok(address) = address {
-                push_link_str_disp(buf, "address_id", ADDRESS_TABLE, address);
-            } else if let Some(pubkey) = output.script_pubkey.p2pk_public_key() {
-                push_link_str_disp(buf, "address_id", ADDRESS_TABLE, pubkey);
-            } else if output.script_pubkey.is_op_return() {
-                push_pair_raw_disp(buf, "op_return", true);
-            } else {
-                push_link_str(
-                    buf,
-                    "address_id",
-                    ADDRESS_TABLE,
-                    format!("raw_{}", output.script_pubkey.script_hash()),
-                );
-            }
+
+            let (out_type, address) = parse_script_pubkey(&output.script_pubkey, network);
+            let address_id = {
+                let mut address_id = String::new();
+                push_id_str(&mut address_id, ADDRESS_TABLE, &address);
+                address_id
+            };
+            push_pair_raw(buf, "address_id", &address_id);
+
+            buf.push_str("} RETURN NONE;\n");
+
+            buf.push_str("UPDATE ");
+            buf.push_str(&address_id);
+            buf.push_str(" CONTENT {");
+            push_pair_str(
+                buf,
+                "type",
+                match out_type {
+                    TxOutType::Address(ref addr) => addr.to_string(),
+                    _ => Into::<&'static str>::into(&out_type).to_string(),
+                },
+            );
+            //push_pair_str(buf, "type", format!("{:?}", &out_type));
+            push_pair_str_disp(
+                buf,
+                "script_pubkey_hash",
+                output.script_pubkey.script_hash(),
+            );
+            push_pair_str_disp(
+                buf,
+                "script_pubkey_wshash",
+                output.script_pubkey.wscript_hash(),
+            );
+            push_pair_str(
+                buf,
+                "script_pubkey_hex",
+                output.script_pubkey.to_hex_string(),
+            );
+            push_pair_str_disp(buf, "script_pubkey", output.script_pubkey);
             buf.push_str("} RETURN NONE;\n");
 
             buf.push_str("RELATE ");
@@ -205,6 +236,39 @@ fn block_to_surql(buf: &mut String, height: u64, block: Block, network: Network)
             push_pair_raw_disp(buf, "vin", vin);
             buf.push_str("} RETURN NONE;\n");
         }
+    }
+}
+
+#[derive(Debug, strum::IntoStaticStr)]
+enum TxOutType {
+    P2pk,
+    P2ms,
+    OpReturn,
+    Address(AddressType),
+    NonStandardWitness(WitnessVersion),
+    NonStandard,
+}
+
+fn parse_script_pubkey(script_pubkey: &Script, network: Network) -> (TxOutType, String) {
+    if let Ok(address) = Address::from_script(script_pubkey, network) {
+        let out_type = if let Some(out_type) = address.address_type() {
+            TxOutType::Address(out_type)
+        } else if let Payload::WitnessProgram(ref prog) = address.payload {
+            TxOutType::NonStandardWitness(prog.version())
+        } else {
+            TxOutType::NonStandard
+        };
+        (out_type, address.to_string())
+    } else if let Some(pubkey) = script_pubkey.p2pk_public_key() {
+        (TxOutType::P2pk, pubkey.to_string())
+    } else if script_pubkey.is_op_return() {
+        (TxOutType::OpReturn, script_pubkey.script_hash().to_string())
+    } else {
+        // TODO P2ms https://learnmeabitcoin.com/technical/p2ms
+        (
+            TxOutType::NonStandard,
+            script_pubkey.script_hash().to_string(),
+        )
     }
 }
 
