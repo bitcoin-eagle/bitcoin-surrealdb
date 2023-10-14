@@ -6,8 +6,14 @@ use bitcoin::{
     Address, Block, Network, Script,
 };
 use bitcoincore_rpc::{Auth, Client, RpcApi};
+use futures_util::{
+    future,
+    stream::{FuturesOrdered, FuturesUnordered, StreamExt},
+    Stream, TryStream, TryStreamExt,
+};
 use serde::Deserialize;
 use surrealdb::{engine::remote::ws::Ws, opt::auth::Root, sql::Thing, Surreal};
+use tokio::task::JoinHandle;
 mod surreal_example;
 
 // #[derive(Debug, Serialize, Deserialize)]
@@ -30,10 +36,22 @@ const CONFIRMS_EDGE: &str = "confirms";
 const LOCKED_BY_EDGE: &str = "locked_by";
 const AS_ADDRESS_EDGE: &str = "as_address";
 
+const BITCOIN_RPC_CONCURRENCY: usize = 2;
+#[cfg(debug_assertions)]
+const BLOCK_CONCURRENCY_MULTIPLIER: usize = 1;
+#[cfg(not(debug_assertions))]
+const BLOCK_CONCURRENCY_MULTIPLIER: usize = 1;
+
 #[derive(Debug, Deserialize)]
 struct Record {
     #[allow(dead_code)]
     id: Thing,
+}
+
+struct BlockJobDependency {
+    network: Network,
+    buf: String,
+    db: Surreal<surrealdb::engine::remote::ws::Client>,
 }
 
 #[tokio::main]
@@ -57,68 +75,168 @@ async fn run() -> Result<()> {
     // Select a specific namespace / database
     db.use_ns("test").use_db("bitcoin-main").await?;
 
-    // delete all records from blocks
-    let mut r = db
-        .query(format!(
-            "DELETE {};DELETE {};DELETE {};DELETE {};DELETE {};DELETE {};DELETE {}; DELETE {}; DELETE {}; DELETE {}; DELETE {}; DELETE {};",
-            OUTPUTS_EDGE,
-            SPENT_BY_EDGE,
-            CONFIRMS_EDGE,
-            LOCKED_BY_EDGE,
-            REWARDS_EDGE,
-            AS_ADDRESS_EDGE,
-            TRANSACTION_TABLE,
-            TIP_HIST_TABLE,
-            BLOCK_TABLE,
-            TXOUT_TABLE,
-            ADDRESS_TABLE,
-            SCRIPT_PUBKEY_TABLE,
-        ))
-        .await?;
+    let mut r = db.query("REMOVE DATABASE `bitcoin-main`;").await?;
     for e in r.take_errors() {
         Err(e.1)?;
     }
-    assert_eq!(r.num_statements(), 12);
+    assert_eq!(r.num_statements(), 1);
 
-    let btc = Client::new(
-        "localhost:8332",
-        Auth::UserPass(
-            "bitcoin-surrealdb".into(),
-            "o4ka4wx3i0wxar0bec2w1sm9h".into(),
-        ),
-    )?;
-    let blockchain_info = btc.get_blockchain_info()?;
-    println!("blockchain_info:\n{:?}", blockchain_info);
-    let tip_hash = btc.get_best_block_hash()?;
-    let header = btc.get_block_header_info(&tip_hash)?;
-    println!("best block hash:\n{}", tip_hash);
-    println!("block info:\n{:?}", header);
-    let mut height = 0;
-    let mut buf = String::new();
-    let max_height = header.height as u64;
+    // delete all records from blocks
+    // let mut r = db
+    //     .query(format!(
+    //         "DELETE {};DELETE {};DELETE {};DELETE {};DELETE {};DELETE {};DELETE {}; DELETE {}; DELETE {}; DELETE {}; DELETE {}; DELETE {};",
+    //         OUTPUTS_EDGE,
+    //         SPENT_BY_EDGE,
+    //         CONFIRMS_EDGE,
+    //         LOCKED_BY_EDGE,
+    //         REWARDS_EDGE,
+    //         AS_ADDRESS_EDGE,
+    //         TRANSACTION_TABLE,
+    //         TIP_HIST_TABLE,
+    //         BLOCK_TABLE,
+    //         TXOUT_TABLE,
+    //         ADDRESS_TABLE,
+    //         SCRIPT_PUBKEY_TABLE,
+    //     ))
+    //     .await?;
+    // for e in r.take_errors() {
+    //     Err(e.1)?;
+    // }
+    // assert_eq!(r.num_statements(), 12);
+
+    let threads = tokio_rayon::rayon::current_num_threads();
+    let limit = usize::max(1, threads * BLOCK_CONCURRENCY_MULTIPLIER);
+    println!("limit: {limit}");
     let network = Network::from_core_arg(blockchain_info.chain.as_str())?;
-    while let Ok(block_hash) = btc.get_block_hash(height) {
-        println!("block [{}]:{}", height, block_hash);
-        //let block = btc.get_block(&block_hash)?;
-        // let header = btc.get_block_header(&block_hash)?;
-        // let header_info = btc.get_block_header_info(&block_hash)?;
-        let block = btc.get_block(&block_hash)?;
+    let mut fut = FuturesUnordered::new();
+    let blocks = get_blocks_stream();
+    blocks.try_buffered(10);
+    let dep = if limit <= fut.len() {
+        fut.next().await.unwrap()??
+    } else {
+        BlockJobDependency {
+            network,
+            buf: String::new(),
+            db: {
+                let cfg = surrealdb::opt::Config::default();
+                // Create database connection
+                let db = Surreal::new::<Ws>(("127.0.0.1:8000", cfg)).await?;
 
-        //dbg!(header);
-        //dbg!(header_info);
-        block_to_surql(&mut buf, height, block, network);
-        //dbg!(&buf);
-        let mut r = db.query(&buf).await?;
-        for e in r.take_errors() {
-            dbg!(&e);
-            Err(e.1)?;
+                // Signin as a namespace, database, or root user
+                db.signin(Root {
+                    username: "root",
+                    password: "root",
+                })
+                .await?;
+
+                // Select a specific namespace / database
+                db.use_ns("test").use_db("bitcoin-main").await?;
+                db
+            },
         }
-        //dbg!(r);
-        buf.clear();
-        //dbg!(created);
-        height += 1;
-    }
+    };
+    fut.push(tokio::spawn(process_block(height, dep)));
+
     Ok(())
+}
+
+fn get_blocks_stream() -> impl TryStream<Ok = Block, Error = anyhow::Error> {
+    async_stream::try_stream! {
+        let btc = Client::new(
+            "localhost:8332",
+            Auth::UserPass(
+                "bitcoin-surrealdb".into(),
+                "o4ka4wx3i0wxar0bec2w1sm9h".into(),
+            ),
+        )?;
+        let blockchain_info = btc.get_blockchain_info()?;
+        println!("blockchain_info:\n{:?}", blockchain_info);
+        let tip_hash = btc.get_best_block_hash()?;
+        let header = btc.get_block_header_info(&tip_hash)?;
+        println!("best block hash:\n{}", tip_hash);
+        println!("block info:\n{:?}", header);
+        let mut begin_height = 0;
+        let mut end_height = header.height as u64 + 1;
+        let mut rpc_fut = FuturesOrdered::<JoinHandle<Result<(Block, Client), anyhow::Error>>>::new();
+        while begin_height < end_height {
+            for height in begin_height..end_height {
+                let client = if BITCOIN_RPC_CONCURRENCY <= rpc_fut.len() {
+                    let a: (Block, Client) = rpc_fut.next().await.unwrap()??;
+                    yield a.0;
+                    a.1
+                } else {
+                    Client::new(
+                        "localhost:8332",
+                        Auth::UserPass(
+                            "bitcoin-surrealdb".into(),
+                            "o4ka4wx3i0wxar0bec2w1sm9h".into(),
+                        ),
+                    )?
+                };
+                rpc_fut.push_back(tokio::task::spawn_blocking(move || {
+                    get_block(height, client)
+                }));
+            };
+            while let Some(a) = rpc_fut.next().await {
+                yield a??.0;
+            }
+            begin_height = end_height;
+            let tip_hash = btc.get_best_block_hash()?;
+            let header = btc.get_block_header_info(&tip_hash)?;
+            end_height = header.height as u64 + 1;
+        };
+    }
+}
+
+fn get_block(height: u64, client: Client) -> Result<(Block, Client)> {
+    println!("0_STARTED height: {}", height);
+    let block_hash = client.get_block_hash(height)?;
+    println!("1_GOT_HASH block [{}]:{}", height, block_hash);
+    //let block = btc.get_block(&block_hash)?;
+    // let header = btc.get_block_header(&block_hash)?;
+    // let header_info = btc.get_block_header_info(&block_hash)?;
+    let block = client.get_block(&block_hash)?;
+    println!("2_GOT_BLOCK block [{}]:{}", height, block_hash);
+    Ok((block, client))
+}
+
+async fn process_block(block: Block, dep: BlockJobDependency) -> Result<BlockJobDependency> {
+    println!("0_STARTED height: {}", height);
+
+    let (block, mut dep) =
+        tokio::task::spawn_blocking(move || -> Result<(Block, BlockJobDependency)> {
+            let block_hash = dep.btc.get_block_hash(height)?;
+            println!("1_GOT_HASH block [{}]:{}", height, block_hash);
+            //let block = btc.get_block(&block_hash)?;
+            // let header = btc.get_block_header(&block_hash)?;
+            // let header_info = btc.get_block_header_info(&block_hash)?;
+            let block = dep.btc.get_block(&block_hash)?;
+            println!("2_GOT_BLOCK block [{}]:{}", height, block_hash);
+            Ok((block, dep))
+        })
+        .await??;
+    let block_hash = block.header.block_hash();
+    //dbg!(header);
+    //dbg!(header_info);
+    let dep = tokio_rayon::spawn_fifo(move || {
+        dep.buf.clear();
+        block_to_surql(&mut dep.buf, height, block, dep.network);
+        dep
+    })
+    .await;
+
+    println!("3_SURQL_PREPARED block [{}]:{}", height, block_hash);
+    //dbg!(&buf);
+    let mut r = dep.db.query(&dep.buf).await?;
+    println!("4_SURQL_EXECUTED block [{}]:{}", height, block_hash);
+    for e in r.take_errors() {
+        dbg!(&e);
+        Err(e.1)?;
+    }
+    //dbg!(r);
+
+    //dbg!(created);
+    Ok(dep)
 }
 
 fn block_to_surql(buf: &mut String, height: u64, block: Block, network: Network) {

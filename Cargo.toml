@@ -13,3 +13,7 @@ bitcoincore-rpc = "0.17.0"
 bitcoin = "0.30.1"
 anyhow = "1.0.75"
 strum = { version = "0.25.0", features = ["derive"] }
+tokio-rayon = "2.1.0"
+futures-util = "0.3.28"
+tokio-scoped = "0.2.0"
+async-stream = "0.3.5"
