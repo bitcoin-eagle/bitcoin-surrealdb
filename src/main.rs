@@ -5,9 +5,10 @@ use bitcoin::{
     address::{Payload, WitnessVersion},
     Address, Block, Network, Script,
 };
-use bitcoincore_rpc::{Auth, Client, RpcApi};
+use bitcoincore_rpc::{bitcoincore_rpc_json::GetBlockHeaderResult, Auth, Client, RpcApi};
+use futures_buffered::BufferedStreamExt;
 use futures_util::{
-    future,
+    future, pin_mut,
     stream::{FuturesOrdered, FuturesUnordered, StreamExt},
     Stream, TryStream, TryStreamExt,
 };
@@ -36,11 +37,14 @@ const CONFIRMS_EDGE: &str = "confirms";
 const LOCKED_BY_EDGE: &str = "locked_by";
 const AS_ADDRESS_EDGE: &str = "as_address";
 
-const BITCOIN_RPC_CONCURRENCY: usize = 2;
 #[cfg(debug_assertions)]
-const BLOCK_CONCURRENCY_MULTIPLIER: usize = 1;
+const BITCOIN_RPC_CONCURRENCY: usize = 100;
 #[cfg(not(debug_assertions))]
-const BLOCK_CONCURRENCY_MULTIPLIER: usize = 1;
+const BITCOIN_RPC_CONCURRENCY: usize = 100;
+#[cfg(debug_assertions)]
+const BLOCK_CONCURRENCY_MULTIPLIER: usize = 10;
+#[cfg(not(debug_assertions))]
+const BLOCK_CONCURRENCY_MULTIPLIER: usize = 10;
 
 #[derive(Debug, Deserialize)]
 struct Record {
@@ -104,66 +108,82 @@ async fn run() -> Result<()> {
     // }
     // assert_eq!(r.num_statements(), 12);
 
+    let btc = Client::new(
+        "localhost:8332",
+        Auth::UserPass(
+            "bitcoin-surrealdb".into(),
+            "o4ka4wx3i0wxar0bec2w1sm9h".into(),
+        ),
+    )?;
+    let blockchain_info = btc.get_blockchain_info()?;
+    println!("blockchain_info:\n{:?}", blockchain_info);
+
     let threads = tokio_rayon::rayon::current_num_threads();
     let limit = usize::max(1, threads * BLOCK_CONCURRENCY_MULTIPLIER);
     println!("limit: {limit}");
     let network = Network::from_core_arg(blockchain_info.chain.as_str())?;
     let mut fut = FuturesUnordered::new();
     let blocks = get_blocks_stream();
-    blocks.try_buffered(10);
-    let dep = if limit <= fut.len() {
-        fut.next().await.unwrap()??
-    } else {
-        BlockJobDependency {
-            network,
-            buf: String::new(),
-            db: {
-                let cfg = surrealdb::opt::Config::default();
-                // Create database connection
-                let db = Surreal::new::<Ws>(("127.0.0.1:8000", cfg)).await?;
+    pin_mut!(blocks); // needed for iteration
+    while let Some(r) = blocks.next().await {
+        let (height, block) = r?;
+        let dep = if limit <= fut.len() {
+            fut.next().await.unwrap()?
+        } else {
+            BlockJobDependency {
+                network,
+                buf: String::new(),
+                db: {
+                    let cfg = surrealdb::opt::Config::default();
+                    // Create database connection
+                    let db = Surreal::new::<Ws>(("127.0.0.1:8000", cfg)).await?;
 
-                // Signin as a namespace, database, or root user
-                db.signin(Root {
-                    username: "root",
-                    password: "root",
-                })
-                .await?;
+                    // Signin as a namespace, database, or root user
+                    db.signin(Root {
+                        username: "root",
+                        password: "root",
+                    })
+                    .await?;
 
-                // Select a specific namespace / database
-                db.use_ns("test").use_db("bitcoin-main").await?;
-                db
-            },
-        }
-    };
-    fut.push(tokio::spawn(process_block(height, dep)));
-
+                    // Select a specific namespace / database
+                    db.use_ns("test").use_db("bitcoin-main").await?;
+                    db
+                },
+            }
+        };
+        fut.push(process_block(height, block, dep));
+    }
+    while let Some(r) = fut.next().await {
+        r?;
+    }
     Ok(())
 }
 
-fn get_blocks_stream() -> impl TryStream<Ok = Block, Error = anyhow::Error> {
+fn get_blocks_stream() -> impl Stream<Item = Result<(u64, Block)>> {
     async_stream::try_stream! {
-        let btc = Client::new(
-            "localhost:8332",
-            Auth::UserPass(
-                "bitcoin-surrealdb".into(),
-                "o4ka4wx3i0wxar0bec2w1sm9h".into(),
-            ),
-        )?;
-        let blockchain_info = btc.get_blockchain_info()?;
-        println!("blockchain_info:\n{:?}", blockchain_info);
-        let tip_hash = btc.get_best_block_hash()?;
-        let header = btc.get_block_header_info(&tip_hash)?;
-        println!("best block hash:\n{}", tip_hash);
-        println!("block info:\n{:?}", header);
+        let (mut btc, header) = tokio::task::spawn_blocking(|| -> Result<(Client, GetBlockHeaderResult)>{
+                let btc = Client::new(
+                    "localhost:8332",
+                    Auth::UserPass(
+                        "bitcoin-surrealdb".into(),
+                        "o4ka4wx3i0wxar0bec2w1sm9h".into(),
+                    ),
+                )?;
+                let tip_hash = btc.get_best_block_hash()?;
+                let header = btc.get_block_header_info(&tip_hash)?;
+                println!("best block hash:\n{}", tip_hash);
+                println!("block info:\n{:?}", header);
+                Ok((btc, header))
+        }).await??;
         let mut begin_height = 0;
         let mut end_height = header.height as u64 + 1;
-        let mut rpc_fut = FuturesOrdered::<JoinHandle<Result<(Block, Client), anyhow::Error>>>::new();
+        let mut rpc_fut = FuturesOrdered::<JoinHandle<Result<(u64, Block, Client), anyhow::Error>>>::new();
         while begin_height < end_height {
             for height in begin_height..end_height {
                 let client = if BITCOIN_RPC_CONCURRENCY <= rpc_fut.len() {
-                    let a: (Block, Client) = rpc_fut.next().await.unwrap()??;
-                    yield a.0;
-                    a.1
+                    let a: (u64, Block, Client) = rpc_fut.next().await.unwrap()??;
+                    yield (a.0, a.1);
+                    a.2
                 } else {
                     Client::new(
                         "localhost:8332",
@@ -178,43 +198,64 @@ fn get_blocks_stream() -> impl TryStream<Ok = Block, Error = anyhow::Error> {
                 }));
             };
             while let Some(a) = rpc_fut.next().await {
-                yield a??.0;
+                let tup = a??;
+                yield (tup.0, tup.1);
             }
             begin_height = end_height;
-            let tip_hash = btc.get_best_block_hash()?;
-            let header = btc.get_block_header_info(&tip_hash)?;
+            let (btc2, header) = tokio::task::spawn_blocking(move || -> Result<(Client, GetBlockHeaderResult)>{
+                let tip_hash = btc.get_best_block_hash()?;
+                let header = btc.get_block_header_info(&tip_hash)?;
+                Ok((btc, header))
+            }).await??;
+            btc = btc2;
             end_height = header.height as u64 + 1;
         };
     }
 }
 
-fn get_block(height: u64, client: Client) -> Result<(Block, Client)> {
+fn get_block(height: u64, client: Client) -> Result<(u64, Block, Client)> {
     println!("0_STARTED height: {}", height);
-    let block_hash = client.get_block_hash(height)?;
+    let block_hash = {
+        let r = client.get_block_hash(height);
+        if let Err(ref e) = r {
+            dbg!(e);
+        }
+        r?
+    };
     println!("1_GOT_HASH block [{}]:{}", height, block_hash);
     //let block = btc.get_block(&block_hash)?;
     // let header = btc.get_block_header(&block_hash)?;
     // let header_info = btc.get_block_header_info(&block_hash)?;
-    let block = client.get_block(&block_hash)?;
+    let block = {
+        let r = client.get_block(&block_hash);
+        if let Err(ref e) = r {
+            dbg!(e);
+        }
+        r?
+    };
     println!("2_GOT_BLOCK block [{}]:{}", height, block_hash);
-    Ok((block, client))
+    Ok((height, block, client))
 }
 
-async fn process_block(block: Block, dep: BlockJobDependency) -> Result<BlockJobDependency> {
-    println!("0_STARTED height: {}", height);
+async fn process_block(
+    height: u64,
+    block: Block,
+    mut dep: BlockJobDependency,
+) -> Result<BlockJobDependency> {
+    // println!("0_STARTED height: {}", height);
 
-    let (block, mut dep) =
-        tokio::task::spawn_blocking(move || -> Result<(Block, BlockJobDependency)> {
-            let block_hash = dep.btc.get_block_hash(height)?;
-            println!("1_GOT_HASH block [{}]:{}", height, block_hash);
-            //let block = btc.get_block(&block_hash)?;
-            // let header = btc.get_block_header(&block_hash)?;
-            // let header_info = btc.get_block_header_info(&block_hash)?;
-            let block = dep.btc.get_block(&block_hash)?;
-            println!("2_GOT_BLOCK block [{}]:{}", height, block_hash);
-            Ok((block, dep))
-        })
-        .await??;
+    // let (block, mut dep) =
+    //     tokio::task::spawn_blocking(move || -> Result<(Block, BlockJobDependency)> {
+    //         let block_hash = dep.btc.get_block_hash(height)?;
+    //         println!("1_GOT_HASH block [{}]:{}", height, block_hash);
+    //         //let block = btc.get_block(&block_hash)?;
+    //         // let header = btc.get_block_header(&block_hash)?;
+    //         // let header_info = btc.get_block_header_info(&block_hash)?;
+    //         let block = dep.btc.get_block(&block_hash)?;
+    //         println!("2_GOT_BLOCK block [{}]:{}", height, block_hash);
+    //         Ok((block, dep))
+    //     })
+    //     .await??;
     let block_hash = block.header.block_hash();
     //dbg!(header);
     //dbg!(header_info);
@@ -227,8 +268,16 @@ async fn process_block(block: Block, dep: BlockJobDependency) -> Result<BlockJob
 
     println!("3_SURQL_PREPARED block [{}]:{}", height, block_hash);
     //dbg!(&buf);
-    let mut r = dep.db.query(&dep.buf).await?;
+    let r = dep.db.query(&dep.buf).await;
     println!("4_SURQL_EXECUTED block [{}]:{}", height, block_hash);
+    if let Err(ref e) = r {
+        match e {
+            surrealdb::Error::Db(e) => todo!(),
+            surrealdb::Error::Api(e) => todo!(),
+        }
+        dbg!(e);
+    }
+    let mut r = r?;
     for e in r.take_errors() {
         dbg!(&e);
         Err(e.1)?;

@@ -32,7 +32,7 @@ pub async fn run() -> surrealdb::Result<()> {
     let cfg = surrealdb::opt::Config::default();
     // Create database connection
     let db = Surreal::new::<Ws>(("127.0.0.1:8000", cfg)).await?;
-    
+
     // Signin as a namespace, database, or root user
     db.signin(Root {
         username: "root",
@@ -42,7 +42,6 @@ pub async fn run() -> surrealdb::Result<()> {
 
     // Select a specific namespace / database
     db.use_ns("test").use_db("test").await?;
-
 
     // Create a new person with a random id
     let created: Vec<Record> = db
@@ -75,6 +74,6 @@ pub async fn run() -> surrealdb::Result<()> {
         .bind(("table", "person"))
         .await?;
     dbg!(groups);
-    
+
     Ok(())
 }
