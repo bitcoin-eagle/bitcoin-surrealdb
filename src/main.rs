@@ -59,26 +59,27 @@ async fn run() -> Result<()> {
 
     // delete all records from blocks
     let mut r = db
-        .query(format!(
-            "DELETE {};DELETE {};DELETE {};DELETE {};DELETE {};DELETE {};DELETE {}; DELETE {}; DELETE {}; DELETE {}; DELETE {}; DELETE {};",
-            OUTPUTS_EDGE,
-            SPENT_BY_EDGE,
-            CONFIRMS_EDGE,
-            LOCKED_BY_EDGE,
-            REWARDS_EDGE,
-            AS_ADDRESS_EDGE,
-            TRANSACTION_TABLE,
-            TIP_HIST_TABLE,
-            BLOCK_TABLE,
-            TXOUT_TABLE,
-            ADDRESS_TABLE,
-            SCRIPT_PUBKEY_TABLE,
-        ))
+        // .query(format!(
+        //     "DELETE {};DELETE {};DELETE {};DELETE {};DELETE {};DELETE {};DELETE {}; DELETE {}; DELETE {}; DELETE {}; DELETE {}; DELETE {};",
+        //     OUTPUTS_EDGE,
+        //     SPENT_BY_EDGE,
+        //     CONFIRMS_EDGE,
+        //     LOCKED_BY_EDGE,
+        //     REWARDS_EDGE,
+        //     AS_ADDRESS_EDGE,
+        //     TRANSACTION_TABLE,
+        //     TIP_HIST_TABLE,
+        //     BLOCK_TABLE,
+        //     TXOUT_TABLE,
+        //     ADDRESS_TABLE,
+        //     SCRIPT_PUBKEY_TABLE,
+        // ))
+        .query("REMOVE DATABASE `bitcoin-main`;")
         .await?;
     for e in r.take_errors() {
         Err(e.1)?;
     }
-    assert_eq!(r.num_statements(), 12);
+    assert_eq!(r.num_statements(), 1);
 
     let btc = Client::new(
         "localhost:8332",
