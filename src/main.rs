@@ -2,8 +2,8 @@ use std::fmt::Display;
 
 use anyhow::Result;
 use bitcoin::{
-    address::{Payload, WitnessVersion},
-    Address, Block, Network, Script,
+    address::{Payload},
+    Address, Block, Network, Script, WitnessVersion,
 };
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use serde::Deserialize;
@@ -97,7 +97,7 @@ async fn run() -> Result<()> {
     let mut height = 0;
     let mut buf = String::new();
     let max_height = header.height as u64;
-    let network = Network::from_core_arg(blockchain_info.chain.as_str())?;
+    let network = Network::from_core_arg(blockchain_info.chain.to_core_arg())?;
     while let Ok(block_hash) = btc.get_block_hash(height) {
         println!("block [{}]:{}", height, block_hash);
         //let block = btc.get_block(&block_hash)?;
@@ -332,7 +332,7 @@ fn parse_script_pubkey(script_pubkey: &Script, network: Network) -> (TxOutType, 
     if let Ok(address) = Address::from_script(script_pubkey, network) {
         let out_type = if let Some(out_type) = address.address_type() {
             TxOutType::Address
-        } else if let Payload::WitnessProgram(ref prog) = address.payload {
+        } else if let Payload::WitnessProgram(ref prog) = address.payload() {
             TxOutType::NonStandardWitness(prog.version())
         } else {
             TxOutType::NonStandard
