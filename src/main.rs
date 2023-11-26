@@ -1,10 +1,7 @@
 use std::fmt::Display;
 
 use anyhow::Result;
-use bitcoin::{
-    address::{Payload},
-    Address, Block, Network, Script, WitnessVersion,
-};
+use bitcoin::{address::Payload, Address, Block, Network, Script, WitnessVersion};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use serde::Deserialize;
 use surrealdb::{engine::remote::ws::Ws, opt::auth::Root, sql::Thing, Surreal};
@@ -82,7 +79,7 @@ async fn run() -> Result<()> {
     assert_eq!(r.num_statements(), 1);
 
     let btc = Client::new(
-        "localhost:8332",
+        "127.0.0.1:8332",
         Auth::UserPass(
             "bitcoin-surrealdb".into(),
             "o4ka4wx3i0wxar0bec2w1sm9h".into(),

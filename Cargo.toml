@@ -13,3 +13,6 @@ bitcoincore-rpc = "0.18.0"
 bitcoin = "0.31.0"
 anyhow = "1.0.75"
 strum = { version = "0.25.0", features = ["derive"] }
+clap = { version = "4.4.8", features = ["derive", "env"] }
+log = "0.4.20"
+env_logger = "0.10.1"
