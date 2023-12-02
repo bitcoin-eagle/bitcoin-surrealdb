@@ -2,8 +2,10 @@ use anyhow::Result;
 use bitcoin::{address::Payload, Address, Block, Network, Script, WitnessVersion};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use std::fmt::Display;
-
 use surrealdb::{engine::remote::ws::Ws, opt::auth::Root, Surreal};
+
+use crate::cli::Command::*;
+use crate::cli::*;
 
 const TIP_HIST_TABLE: &str = "tip_hist";
 const BLOCK_TABLE: &str = "block";
@@ -18,7 +20,53 @@ const CONFIRMS_EDGE: &str = "confirms";
 const LOCKED_BY_EDGE: &str = "locked_by";
 const AS_ADDRESS_EDGE: &str = "as_address";
 
-pub async fn run(command: &super::cli::Command) -> Result<()> {
+pub async fn run(command: &Command) -> Result<()> {
+    match command {
+        Export(c) => {
+            let btc = crate::btc::connect(&c.btc)?;
+            with_each_block_surql(&btc, |s| {
+                todo!();
+                // TODO: write s to file
+                // TODO: write filename to stdout
+            })?;
+        }
+        Ingest(c) => todo!(),
+    }
+    run_impl(command).await
+}
+
+fn with_each_block_surql(btc: &Client, mut f: impl FnMut(&str)) -> Result<()> {
+    let blockchain_info = btc.get_blockchain_info()?;
+    println!("blockchain_info:\n{:?}", blockchain_info);
+    let tip_hash = btc.get_best_block_hash()?;
+    let header = btc.get_block_header_info(&tip_hash)?;
+    println!("best block hash:\n{}", tip_hash);
+    println!("block info:\n{:?}", header);
+    let mut height = 0;
+    let mut buf = String::new();
+    let max_height = header.height as u64;
+    let network = Network::from_core_arg(blockchain_info.chain.to_core_arg())?;
+    while let Ok(block_hash) = btc.get_block_hash(height) {
+        println!("block [{}]:{}", height, block_hash);
+        //let block = btc.get_block(&block_hash)?;
+        // let header = btc.get_block_header(&block_hash)?;
+        // let header_info = btc.get_block_header_info(&block_hash)?;
+        let block = btc.get_block(&block_hash)?;
+
+        //dbg!(header);
+        //dbg!(header_info);
+        block_to_surql(&mut buf, height, block, network);
+        //dbg!(&buf);
+        f(&buf);
+        //dbg!(r);
+        buf.clear();
+        //dbg!(created);
+        height += 1;
+    }
+    Ok(())
+}
+
+async fn run_impl(command: &Command) -> Result<()> {
     let cfg = surrealdb::opt::Config::default();
     // Create database connection
     let db = Surreal::new::<Ws>(("127.0.0.1:8000", cfg)).await?;

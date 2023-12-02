@@ -1,3 +1,4 @@
+mod btc;
 mod cli;
 mod surreal;
 

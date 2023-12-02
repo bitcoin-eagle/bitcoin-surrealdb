@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use clap::{Args, Parser, Subcommand};
-use clap_verbosity_flag::{InfoLevel, LogLevel, Verbosity};
+#[cfg(not(debug_assertions))]
+use clap_verbosity_flag::InfoLevel;
+use clap_verbosity_flag::{LogLevel, Verbosity};
 use log::*;
 use secrecy::Secret;
 
@@ -22,9 +24,10 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
     #[command(flatten)]
-    // #[cfg(debug_assertions)]
-    // pub verbose: Option<Verbosity<DebugLevel>>,
-    // #[cfg(not(debug_assertions))]
+    #[cfg(debug_assertions)]
+    pub verbose: Option<Verbosity<DebugLevel>>,
+    #[command(flatten)]
+    #[cfg(not(debug_assertions))]
     pub verbose: Option<Verbosity<InfoLevel>>,
 }
 
@@ -47,64 +50,64 @@ pub enum Command {
 #[command()]
 pub struct Export {
     #[command(flatten)]
-    btc: Btc,
+    pub btc: Btc,
     /// Export this many blocks per *.surql file.
     #[arg(short = 'b', long, default_value = "1")]
-    blocks_per_file: usize,
+    pub blocks_per_file: usize,
     /// Export Surreal QL (*.surql) files to this directory.
     #[arg(short = 'o', long, default_value = ".")]
-    output_dir: Box<Path>,
+    pub output_dir: Box<Path>,
     /// Export blocks starting from this height.
     #[arg(short = 'f', long, default_value = "0")]
-    from_height: usize,
+    pub from_height: usize,
     /// Stop after exporting this many blocks.
     #[arg(short = 'c', long)]
-    block_count: Option<usize>,
+    pub block_count: Option<usize>,
     /// Do not envelop the SurrealQL output in a database transaction.
     #[arg(short = 'n', long)]
-    no_db_transaction: bool,
+    pub no_db_transaction: bool,
     /// file name delimiter is NUL, not newline
     #[arg(short = 'z', long)]
-    zero_terminated: bool,
+    pub zero_terminated: bool,
 }
 
 #[derive(Args, Debug)]
 #[command()]
 pub struct Ingest {
     #[command(flatten)]
-    sdb: SurrealDB,
+    pub sdb: SurrealDB,
     #[command(flatten)]
-    btc: Btc,
+    pub btc: Btc,
 }
 
 #[derive(Args, Debug)]
 pub struct SurrealDB {
     /// SurrealDB URL
     #[arg(short = 'l', long)]
-    sdb_url: Box<str>,
+    pub sdb_url: Box<str>,
     /// SurrealDB username
     #[arg(short = 'u', long)]
-    sdb_user: Box<str>,
+    pub sdb_user: Box<str>,
     /// SurrealDB password
     #[arg(short = 'p', long)]
-    sdb_pass: Secret<String>,
+    pub sdb_pass: Secret<String>,
     /// SurrealDB namespace
     #[arg(short = 'n', long)]
-    sdb_ns: Box<str>,
+    pub sdb_ns: Box<str>,
     /// SurrealDB database name
     #[arg(short = 'd', long)]
-    sdb_db: Box<str>,
+    pub sdb_db: Box<str>,
 }
 
 #[derive(Args, Debug)]
 pub struct Btc {
     /// Bitcoin Core RPC URL
     #[arg(short = 'L', long)]
-    btc_rpc_url: Box<str>,
+    pub btc_rpc_url: Box<str>,
     /// Bitcoin Core RPC username
     #[arg(short = 'U', long)]
-    btc_rpc_user: Box<str>,
+    pub btc_rpc_user: Box<str>,
     /// Bitcoin Core RPC password
     #[arg(short = 'P', long)]
-    btc_rpc_pass: Secret<String>,
+    pub btc_rpc_pass: Secret<String>,
 }
