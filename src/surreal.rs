@@ -24,10 +24,19 @@ pub async fn run(command: &Command) -> Result<()> {
     match command {
         Export(c) => {
             let btc = crate::btc::connect(&c.btc)?;
-            with_each_block_surql(&btc, |s| {
-                todo!();
+            with_each_block_surql(&btc, |h, b, s| {
+                let filename = format!("block-{:09}-{}.surql", h, b.block_hash());
+                dbg!(&filename);
+                dbg!(b.header);
+                //dbg!(s);
+                //todo!();
                 // TODO: write s to file
                 // TODO: write filename to stdout
+                print!(
+                    "{}{}",
+                    &filename,
+                    if c.zero_terminated { '\0' } else { '\n' }
+                );
             })?;
         }
         Ingest(c) => todo!(),
@@ -35,7 +44,7 @@ pub async fn run(command: &Command) -> Result<()> {
     run_impl(command).await
 }
 
-fn with_each_block_surql(btc: &Client, mut f: impl FnMut(&str)) -> Result<()> {
+fn with_each_block_surql(btc: &Client, mut f: impl FnMut(u64, &Block, &str)) -> Result<()> {
     let blockchain_info = btc.get_blockchain_info()?;
     println!("blockchain_info:\n{:?}", blockchain_info);
     let tip_hash = btc.get_best_block_hash()?;
@@ -48,16 +57,16 @@ fn with_each_block_surql(btc: &Client, mut f: impl FnMut(&str)) -> Result<()> {
     let network = Network::from_core_arg(blockchain_info.chain.to_core_arg())?;
     while let Ok(block_hash) = btc.get_block_hash(height) {
         println!("block [{}]:{}", height, block_hash);
-        //let block = btc.get_block(&block_hash)?;
+        // let block = btc.get_block(&block_hash)?;
         // let header = btc.get_block_header(&block_hash)?;
         // let header_info = btc.get_block_header_info(&block_hash)?;
         let block = btc.get_block(&block_hash)?;
 
         //dbg!(header);
         //dbg!(header_info);
-        block_to_surql(&mut buf, height, block, network);
+        block_to_surql(&mut buf, height, &block, network);
         //dbg!(&buf);
-        f(&buf);
+        f(height, &block, &buf);
         //dbg!(r);
         buf.clear();
         //dbg!(created);
@@ -131,7 +140,7 @@ async fn run_impl(command: &Command) -> Result<()> {
 
         //dbg!(header);
         //dbg!(header_info);
-        block_to_surql(&mut buf, height, block, network);
+        block_to_surql(&mut buf, height, &block, network);
         //dbg!(&buf);
         let mut r = db.query(&buf).await?;
         for e in r.take_errors() {
@@ -146,7 +155,7 @@ async fn run_impl(command: &Command) -> Result<()> {
     Ok(())
 }
 
-fn block_to_surql(buf: &mut String, height: u64, block: Block, network: Network) {
+fn block_to_surql(buf: &mut String, height: u64, block: &Block, network: Network) {
     buf.push_str("UPDATE ");
     let mut block_id = String::new();
     push_id_str_disp(&mut block_id, BLOCK_TABLE, block.block_hash());
@@ -177,7 +186,7 @@ fn block_to_surql(buf: &mut String, height: u64, block: Block, network: Network)
     push_pair_raw(buf, "block_id", &block_id);
     buf.push_str("} RETURN NONE;\n");
 
-    for (idx, transaction) in block.txdata.into_iter().enumerate() {
+    for (idx, transaction) in block.txdata.iter().enumerate() {
         let txid_raw_str = transaction.txid().to_string();
         let mut transaction_id = String::new();
         push_id_str(&mut transaction_id, TRANSACTION_TABLE, &txid_raw_str);
@@ -197,7 +206,7 @@ fn block_to_surql(buf: &mut String, height: u64, block: Block, network: Network)
         push_pair_raw_disp(buf, "index", idx);
         buf.push_str("} RETURN NONE;\n");
 
-        for (output, vout) in transaction.output.into_iter().zip(0_u32..) {
+        for (output, vout) in transaction.output.iter().zip(0_u32..) {
             let txout_id = prepare_txout_id(&txid_raw_str, vout);
 
             let script_pubkey_id = {
@@ -325,7 +334,7 @@ fn block_to_surql(buf: &mut String, height: u64, block: Block, network: Network)
             buf.push_str("} RETURN NONE;\n");
         }
 
-        for (vin, input) in transaction.input.into_iter().enumerate() {
+        for (vin, input) in transaction.input.iter().enumerate() {
             buf.push_str("RELATE ");
             buf.push_str(&prepare_txout_id(
                 &input.previous_output.txid.to_string(),
