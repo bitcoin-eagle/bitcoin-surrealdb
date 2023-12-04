@@ -8,8 +8,8 @@ pub fn connect(cfg: &Btc) -> Result<Client> {
     Ok(Client::new(
         &cfg.btc_rpc_url,
         Auth::UserPass(
-            cfg.btc_rpc_user.into(),
-            cfg.btc_rpc_pass.expose_secret().into(),
+            cfg.btc_rpc_user.to_string(),
+            cfg.btc_rpc_pass.expose_secret().to_string(),
         ),
     )?)
 }

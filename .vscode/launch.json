@@ -7,6 +7,32 @@
         {
             "type": "lldb",
             "request": "launch",
+            "name": "Debug executable 'bitcoin-surrealdb' -> export",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=bitcoin-surrealdb",
+                    "--package=bitcoin-surrealdb"
+                ],
+                "filter": {
+                    "name": "bitcoin-surrealdb",
+                    "kind": "bin"
+                }
+            },
+            "args": [
+                "export",
+                "--btc-rpc-url",
+                "127.0.0.1:8332",
+                "--btc-rpc-user",
+                "bitcoin-surrealdb",
+                "--btc-rpc-pass",
+                "o4ka4wx3i0wxar0bec2w1sm9h"
+            ],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
             "name": "Debug executable 'bitcoin-surrealdb'",
             "cargo": {
                 "args": [

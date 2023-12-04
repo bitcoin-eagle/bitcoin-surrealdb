@@ -1,20 +1,19 @@
 use std::path::Path;
 
 use clap::{Args, Parser, Subcommand};
-#[cfg(not(debug_assertions))]
-use clap_verbosity_flag::InfoLevel;
 use clap_verbosity_flag::{LogLevel, Verbosity};
-use log::*;
 use secrecy::Secret;
 
+#[cfg(not(debug_assertions))]
+pub const DEFAULT_LOG_LEVEL: log::Level = log::Level::Info;
 #[cfg(debug_assertions)]
-#[derive(Copy, Clone, Debug, Default)]
-pub struct DebugLevel;
+pub const DEFAULT_LOG_LEVEL: log::Level = log::Level::Debug;
 
-#[cfg(debug_assertions)]
-impl LogLevel for DebugLevel {
+#[derive(Copy, Clone, Debug, Default)]
+pub struct DefaultLevel;
+impl LogLevel for DefaultLevel {
     fn default() -> Option<log::Level> {
-        Some(log::Level::Debug)
+        Some(DEFAULT_LOG_LEVEL)
     }
 }
 
@@ -24,11 +23,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
     #[command(flatten)]
-    #[cfg(debug_assertions)]
-    pub verbose: Option<Verbosity<DebugLevel>>,
-    #[command(flatten)]
-    #[cfg(not(debug_assertions))]
-    pub verbose: Option<Verbosity<InfoLevel>>,
+    pub verbose: Option<Verbosity<DefaultLevel>>,
 }
 
 /// Doc comment
