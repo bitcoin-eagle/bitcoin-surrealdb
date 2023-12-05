@@ -1,11 +1,11 @@
 use anyhow::Result;
 use bitcoin::{address::Payload, Address, Block, Network, Script, WitnessVersion};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
+use log::*;
 use std::fmt::Display;
-use std::fs::File;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use surrealdb::{engine::remote::ws::Ws, opt::auth::Root, Surreal};
 
 use crate::cli::Command::*;
@@ -33,8 +33,8 @@ pub async fn run(command: &Command) -> Result<()> {
                 let mut path = PathBuf::from(c.output_dir.as_os_str());
                 let filename = format!("block-{:09}-{}.surql", h, b.block_hash());
                 path.push(filename);
-                dbg!(&path);
-                dbg!(b.header);
+                debug!("{:#?}",&path);
+                debug!("{:#?}",b.header);
                 //dbg!(s);
                 //todo!();
                 // TODO: write s to file
@@ -59,17 +59,17 @@ fn with_each_block_surql(
     mut f: impl FnMut(u64, &Block, &str) -> Result<()>,
 ) -> Result<()> {
     let blockchain_info = btc.get_blockchain_info()?;
-    println!("blockchain_info:\n{:?}", blockchain_info);
+    debug!("blockchain_info:\n{:?}", blockchain_info);
     let tip_hash = btc.get_best_block_hash()?;
     let header = btc.get_block_header_info(&tip_hash)?;
-    println!("best block hash:\n{}", tip_hash);
-    println!("block info:\n{:?}", header);
+    debug!("best block hash:\n{}", tip_hash);
+    debug!("block info:\n{:?}", header);
     let mut height = 0;
     let mut buf = String::new();
     let max_height = header.height as u64;
     let network = Network::from_core_arg(blockchain_info.chain.to_core_arg())?;
     while let Ok(block_hash) = btc.get_block_hash(height) {
-        println!("block [{}]:{}", height, block_hash);
+        debug!("block [{}]:{}", height, block_hash);
         // let block = btc.get_block(&block_hash)?;
         // let header = btc.get_block_header(&block_hash)?;
         // let header_info = btc.get_block_header_info(&block_hash)?;
@@ -135,17 +135,17 @@ async fn run_impl(command: &Command) -> Result<()> {
         ),
     )?;
     let blockchain_info = btc.get_blockchain_info()?;
-    println!("blockchain_info:\n{:?}", blockchain_info);
+    debug!("blockchain_info:\n{:?}", blockchain_info);
     let tip_hash = btc.get_best_block_hash()?;
     let header = btc.get_block_header_info(&tip_hash)?;
-    println!("best block hash:\n{}", tip_hash);
-    println!("block info:\n{:?}", header);
+    debug!("best block hash:\n{}", tip_hash);
+    debug!("block info:\n{:?}", header);
     let mut height = 0;
     let mut buf = String::new();
     let max_height = header.height as u64;
     let network = Network::from_core_arg(blockchain_info.chain.to_core_arg())?;
     while let Ok(block_hash) = btc.get_block_hash(height) {
-        println!("block [{}]:{}", height, block_hash);
+        debug!("block [{}]:{}", height, block_hash);
         //let block = btc.get_block(&block_hash)?;
         // let header = btc.get_block_header(&block_hash)?;
         // let header_info = btc.get_block_header_info(&block_hash)?;
@@ -157,7 +157,7 @@ async fn run_impl(command: &Command) -> Result<()> {
         //dbg!(&buf);
         let mut r = db.query(&buf).await?;
         for e in r.take_errors() {
-            dbg!(&e);
+            error!("{:#?}", &e);
             Err(e.1)?;
         }
         //dbg!(r);
@@ -234,7 +234,7 @@ fn block_to_surql(buf: &mut String, height: u64, block: &Block, network: Network
             buf.push_str("UPDATE ");
             buf.push_str(&txout_id);
             buf.push_str(" CONTENT {");
-            push_pair_raw_disp(buf, "value_sats", output.value);
+            push_pair_raw_disp(buf, "value_sats", output.value.to_sat());
             buf.push_str("} RETURN NONE;\n");
 
             // TODO: INSERT SCRIPT_PUBKEY
