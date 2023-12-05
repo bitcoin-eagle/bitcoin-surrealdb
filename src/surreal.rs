@@ -2,6 +2,10 @@ use anyhow::Result;
 use bitcoin::{address::Payload, Address, Block, Network, Script, WitnessVersion};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use std::fmt::Display;
+use std::fs::File;
+use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use surrealdb::{engine::remote::ws::Ws, opt::auth::Root, Surreal};
 
 use crate::cli::Command::*;
@@ -22,21 +26,27 @@ const AS_ADDRESS_EDGE: &str = "as_address";
 
 pub async fn run(command: &Command) -> Result<()> {
     match command {
-        Export(c) => {
+        Export(ref c) => {
             let btc = crate::btc::connect(&c.btc)?;
-            with_each_block_surql(&btc, |h, b, s| {
+            let mut out = std::io::stdout();
+            with_each_block_surql(&btc, |h, b, s| -> Result<()> {
+                let mut path = PathBuf::from(c.output_dir.as_os_str());
                 let filename = format!("block-{:09}-{}.surql", h, b.block_hash());
-                dbg!(&filename);
+                path.push(filename);
+                dbg!(&path);
                 dbg!(b.header);
                 //dbg!(s);
                 //todo!();
                 // TODO: write s to file
+                std::fs::write(&path, s)?;
                 // TODO: write filename to stdout
-                print!(
-                    "{}{}",
-                    &filename,
-                    if c.zero_terminated { '\0' } else { '\n' }
-                );
+                out.write_all(path.as_os_str().as_bytes())?;
+                if c.zero_terminated {
+                    out.write_all(&[0])?;
+                } else {
+                    out.write_all(&[b'\n'])?;
+                }
+                Ok(())
             })?;
         }
         Ingest(c) => todo!(),
@@ -44,7 +54,10 @@ pub async fn run(command: &Command) -> Result<()> {
     run_impl(command).await
 }
 
-fn with_each_block_surql(btc: &Client, mut f: impl FnMut(u64, &Block, &str)) -> Result<()> {
+fn with_each_block_surql(
+    btc: &Client,
+    mut f: impl FnMut(u64, &Block, &str) -> Result<()>,
+) -> Result<()> {
     let blockchain_info = btc.get_blockchain_info()?;
     println!("blockchain_info:\n{:?}", blockchain_info);
     let tip_hash = btc.get_best_block_hash()?;
@@ -66,7 +79,7 @@ fn with_each_block_surql(btc: &Client, mut f: impl FnMut(u64, &Block, &str)) -> 
         //dbg!(header_info);
         block_to_surql(&mut buf, height, &block, network);
         //dbg!(&buf);
-        f(height, &block, &buf);
+        f(height, &block, &buf)?;
         //dbg!(r);
         buf.clear();
         //dbg!(created);
