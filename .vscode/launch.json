@@ -26,7 +26,9 @@
                 "--btc-rpc-user",
                 "bitcoin-surrealdb",
                 "--btc-rpc-pass",
-                "o4ka4wx3i0wxar0bec2w1sm9h"
+                "o4ka4wx3i0wxar0bec2w1sm9h",
+                "--from-height=820000",
+                "--block-count=10",
             ],
             "cwd": "${workspaceFolder}"
         },
