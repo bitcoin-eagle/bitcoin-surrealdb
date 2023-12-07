@@ -1,4 +1,5 @@
 use anyhow::Result;
+use bitcoin::transaction;
 use bitcoin::{address::Payload, Address, Block, Network, Script, WitnessVersion};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use log::*;
@@ -29,12 +30,12 @@ pub async fn run(command: &Command) -> Result<()> {
         Export(ref c) => {
             let btc = crate::btc::connect(&c.btc)?;
             let mut out = std::io::stdout();
-            with_each_block_surql(&btc, |h, b, s| -> Result<()> {
+            with_each_block_surql(&btc, &c.surql, |h, b, s| -> Result<()> {
                 let mut path = PathBuf::from(c.output_dir.as_os_str());
                 let filename = format!("block-{:09}-{}.surql", h, b.block_hash());
                 path.push(filename);
-                debug!("{:#?}",&path);
-                debug!("{:#?}",b.header);
+                trace!("{:#?}", &path);
+                trace!("{:#?}", b.header);
                 //dbg!(s);
                 //todo!();
                 // TODO: write s to file
@@ -48,14 +49,19 @@ pub async fn run(command: &Command) -> Result<()> {
                 }
                 Ok(())
             })?;
+            debug!("flushing stdout");
+            out.flush()?;
+            debug!("stdout flushed");
         }
         Ingest(c) => todo!(),
     }
-    run_impl(command).await
+    Ok(())
+    //run_impl(command).await
 }
 
 fn with_each_block_surql(
     btc: &Client,
+    surql: &Surql,
     mut f: impl FnMut(u64, &Block, &str) -> Result<()>,
 ) -> Result<()> {
     let blockchain_info = btc.get_blockchain_info()?;
@@ -64,11 +70,16 @@ fn with_each_block_surql(
     let header = btc.get_block_header_info(&tip_hash)?;
     debug!("best block hash:\n{}", tip_hash);
     debug!("block info:\n{:?}", header);
-    let mut height = 0;
+    let mut height = surql.from_height;
     let mut buf = String::new();
-    let max_height = header.height as u64;
     let network = Network::from_core_arg(blockchain_info.chain.to_core_arg())?;
     while let Ok(block_hash) = btc.get_block_hash(height) {
+        if let Some(block_count) = surql.block_count {
+            if block_count <= height - surql.from_height {
+                trace!("block_count reached, stopping...");
+                break;
+            }
+        }
         debug!("block [{}]:{}", height, block_hash);
         // let block = btc.get_block(&block_hash)?;
         // let header = btc.get_block_header(&block_hash)?;
@@ -77,7 +88,7 @@ fn with_each_block_surql(
 
         //dbg!(header);
         //dbg!(header_info);
-        block_to_surql(&mut buf, height, &block, network);
+        block_to_surql(&mut buf, height, &block, network, !surql.no_db_transaction);
         //dbg!(&buf);
         f(height, &block, &buf)?;
         //dbg!(r);
@@ -153,7 +164,7 @@ async fn run_impl(command: &Command) -> Result<()> {
 
         //dbg!(header);
         //dbg!(header_info);
-        block_to_surql(&mut buf, height, &block, network);
+        block_to_surql(&mut buf, height, &block, network, true);
         //dbg!(&buf);
         let mut r = db.query(&buf).await?;
         for e in r.take_errors() {
@@ -168,7 +179,16 @@ async fn run_impl(command: &Command) -> Result<()> {
     Ok(())
 }
 
-fn block_to_surql(buf: &mut String, height: u64, block: &Block, network: Network) {
+fn block_to_surql(
+    buf: &mut String,
+    height: u64,
+    block: &Block,
+    network: Network,
+    db_transaction: bool,
+) {
+    if db_transaction {
+        buf.push_str("BEGIN TRANSACTION;\n");
+    }
     buf.push_str("UPDATE ");
     let mut block_id = String::new();
     push_id_str_disp(&mut block_id, BLOCK_TABLE, block.block_hash());
@@ -361,6 +381,9 @@ fn block_to_surql(buf: &mut String, height: u64, block: &Block, network: Network
             push_pair_raw_disp(buf, "vin", vin);
             buf.push_str("} RETURN NONE;\n");
         }
+    }
+    if db_transaction {
+        buf.push_str("COMMIT TRANSACTION;\n");
     }
 }
 

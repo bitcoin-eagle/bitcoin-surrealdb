@@ -48,22 +48,15 @@ pub struct Export {
     pub btc: Btc,
     /// Export this many blocks per *.surql file.
     #[arg(short = 'b', long, default_value = "1")]
-    pub blocks_per_file: usize,
+    pub blocks_per_file: u64,
     /// Export Surreal QL (*.surql) files to this directory.
     #[arg(short = 'o', long, default_value = ".")]
     pub output_dir: Box<Path>,
-    /// Export blocks starting from this height.
-    #[arg(short = 'f', long, default_value = "0")]
-    pub from_height: usize,
-    /// Stop after exporting this many blocks.
-    #[arg(short = 'c', long)]
-    pub block_count: Option<usize>,
-    /// Do not envelop the SurrealQL output in a database transaction.
-    #[arg(short = 'n', long)]
-    pub no_db_transaction: bool,
     /// file name delimiter is NUL, not newline
     #[arg(short = 'z', long)]
     pub zero_terminated: bool,
+    #[command(flatten)]
+    pub surql: Surql,
 }
 
 #[derive(Args, Debug)]
@@ -73,6 +66,20 @@ pub struct Ingest {
     pub sdb: SurrealDB,
     #[command(flatten)]
     pub btc: Btc,
+}
+
+#[derive(Args, Debug)]
+#[command()]
+pub struct Surql {
+    /// Export blocks starting from this height.
+    #[arg(short = 'f', long, default_value = "0")]
+    pub from_height: u64,
+    /// Stop after exporting this many blocks.
+    #[arg(short = 'c', long)]
+    pub block_count: Option<u64>,
+    /// Do not envelop the SurrealQL output in a database transaction.
+    #[arg(short = 'n', long)]
+    pub no_db_transaction: bool,
 }
 
 #[derive(Args, Debug)]
