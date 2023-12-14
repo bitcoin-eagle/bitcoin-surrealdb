@@ -46,9 +46,6 @@ pub enum Command {
 pub struct Export {
     #[command(flatten)]
     pub btc: Btc,
-    /// Export this many blocks per *.surql file.
-    #[arg(short = 'b', long, default_value = "1")]
-    pub blocks_per_file: u64,
     /// Export Surreal QL (*.surql) files to this directory.
     #[arg(short = 'o', long, default_value = ".")]
     pub output_dir: Box<Path>,
@@ -77,6 +74,9 @@ pub struct Surql {
     /// Stop after exporting this many blocks.
     #[arg(short = 'c', long)]
     pub block_count: Option<u64>,
+    /// Export this many blocks per *.surql file.
+    #[arg(short = 'b', long, default_value = "1", value_parser = clap::value_parser!(u64).range(1..))]
+    pub blocks_per_file: u64,
     /// Do not envelop the SurrealQL output in a database transaction.
     #[arg(short = 'n', long)]
     pub no_db_transaction: bool,

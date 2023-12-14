@@ -1,8 +1,10 @@
 use anyhow::Result;
+use bitcoin::block::{Header, Version};
 use bitcoin::transaction;
 use bitcoin::{address::Payload, Address, Block, Network, Script, WitnessVersion};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use log::*;
+use std::default;
 use std::fmt::Display;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
@@ -27,31 +29,36 @@ const AS_ADDRESS_EDGE: &str = "as_address";
 
 pub async fn run(command: &Command) -> Result<()> {
     match command {
-        Export(ref c) => {
-            let btc = crate::btc::connect(&c.btc)?;
+        Export(ref command) => {
+            let btc = crate::btc::connect(&command.btc)?;
             let mut out = std::io::stdout();
-            with_each_block_surql(&btc, &c.surql, |h, b, s| -> Result<()> {
-                let mut path = PathBuf::from(c.output_dir.as_os_str());
-                let filename = format!("block-{:09}-{}.surql", h, b.block_hash());
-                path.push(filename);
-                trace!("{:#?}", &path);
-                trace!("{:#?}", b.header);
-                //dbg!(s);
-                //todo!();
-                // TODO: write s to file
-                std::fs::write(&path, s)?;
-                // TODO: write filename to stdout
-                out.write_all(path.as_os_str().as_bytes())?;
-                if c.zero_terminated {
-                    out.write_all(&[0])?;
-                } else {
-                    out.write_all(&[b'\n'])?;
-                }
-                Ok(())
-            })?;
-            debug!("flushing stdout");
-            out.flush()?;
-            debug!("stdout flushed");
+            with_blocks_surql(
+                &btc,
+                &command.surql,
+                |block_height, header, block_surql| -> Result<()> {
+                    let mut path = PathBuf::from(command.output_dir.as_os_str());
+                    let filename = format!(
+                        "block-{block_height:09}-{hash}.surql",
+                        hash = header.block_hash()
+                    );
+                    path.push(filename);
+                    trace!("{:#?}", &path);
+                    trace!("{:#?}", header);
+                    //dbg!(s);
+                    //todo!();
+                    // TODO: write s to file
+                    std::fs::write(&path, block_surql)?;
+                    // TODO: write filename to stdout
+                    out.write_all(path.as_os_str().as_bytes())?;
+                    if command.zero_terminated {
+                        out.write_all(&[0])?;
+                    } else {
+                        out.write_all(&[b'\n'])?;
+                    }
+                    out.flush()?;
+                    Ok(())
+                },
+            )?;
         }
         Ingest(c) => todo!(),
     }
@@ -59,10 +66,10 @@ pub async fn run(command: &Command) -> Result<()> {
     //run_impl(command).await
 }
 
-fn with_each_block_surql(
+fn with_blocks_surql(
     btc: &Client,
     surql: &Surql,
-    mut f: impl FnMut(u64, &Block, &str) -> Result<()>,
+    mut f: impl FnMut(u64, &Header, &str) -> Result<()>,
 ) -> Result<()> {
     let blockchain_info = btc.get_blockchain_info()?;
     debug!("blockchain_info:\n{:?}", blockchain_info);
@@ -72,7 +79,11 @@ fn with_each_block_surql(
     debug!("block info:\n{:?}", header);
     let mut height = surql.from_height;
     let mut buf = String::new();
+    if !surql.no_db_transaction {
+        buf.push_str("BEGIN TRANSACTION;\n");
+    }
     let network = Network::from_core_arg(blockchain_info.chain.to_core_arg())?;
+    let mut last_header: Option<Header> = None;
     while let Ok(block_hash) = btc.get_block_hash(height) {
         if let Some(block_count) = surql.block_count {
             if block_count <= height - surql.from_height {
@@ -85,16 +96,32 @@ fn with_each_block_surql(
         // let header = btc.get_block_header(&block_hash)?;
         // let header_info = btc.get_block_header_info(&block_hash)?;
         let block = btc.get_block(&block_hash)?;
-
+        last_header = Some(block.header);
         //dbg!(header);
         //dbg!(header_info);
-        block_to_surql(&mut buf, height, &block, network, !surql.no_db_transaction);
-        //dbg!(&buf);
-        f(height, &block, &buf)?;
-        //dbg!(r);
-        buf.clear();
+        block_to_surql(&mut buf, height, &block, network, false);
+        if (height - surql.from_height + 1) % surql.blocks_per_file == 0 {
+            if !surql.no_db_transaction {
+                buf.push_str("COMMIT TRANSACTION;\n");
+            }
+            //dbg!(&buf);
+            f(height, &block.header, &buf)?;
+            //dbg!(r);
+            last_header = None;
+            buf.clear();
+        }
         //dbg!(created);
         height += 1;
+    }
+    if let Some(h) = last_header {
+        if !buf.is_empty() {
+            if !surql.no_db_transaction {
+                buf.push_str("COMMIT TRANSACTION;\n");
+            }
+            f(height - 1, &h, &buf)?;
+            last_header = None;
+            buf.clear();
+        }
     }
     Ok(())
 }
