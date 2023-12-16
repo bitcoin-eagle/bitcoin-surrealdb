@@ -22,12 +22,9 @@
             "args": [
                 "export",
                 "--output-dir=target/export",
-                "--btc-rpc-url",
-                "127.0.0.1:8332",
-                "--btc-rpc-user",
-                "bitcoin-surrealdb",
-                "--btc-rpc-pass",
-                "o4ka4wx3i0wxar0bec2w1sm9h",
+                "--btc-rpc-url=127.0.0.1:8332",
+                "--btc-rpc-user=bitcoin-surrealdb",
+                "--btc-rpc-pass=o4ka4wx3i0wxar0bec2w1sm9h",
                 "--from-height=820000",
                 "--block-count=10",
                 "--blocks-per-file=1"
